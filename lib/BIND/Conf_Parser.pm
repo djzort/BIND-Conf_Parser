@@ -9,7 +9,7 @@ use strict;
 use integer;
 use vars qw($VERSION);
 
-$VERSION = "0.97";
+$VERSION = "0.971";
 
 # token classes
 use constant WORD     => 'W';

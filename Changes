@@ -35,3 +35,7 @@ Revision history for Perl extension BIND::Conf_Parser.
 	- Add support for a bunch of options added in version 9.x.  This
 	  does not provide complete support for version 9 config files,
 	  just most of the easy stuff.
+
+0.971 Fri June 19 09:05:00 2015
+	- Ran perltidy over things
+	- Moved verify_zones to examples/ and tweaked #!
