@@ -23,3 +23,15 @@ Revision history for Perl extension BIND::Conf_Parser.
 0.95  Thu Oct 21 14:31:31 1999
 	- Updated to parse version 8.2.2 config files
 	- Renamed all keys in the object hash to start with an underbar
+
+0.96a Wed Dec 20 15:14:42 2000
+	- read_line method would call chomp() on undef at EOF and would treat
+	  a line containing just a zero as EOF.
+
+0.97  Wed Oct 10 00:11:46 2001
+	- Correct the parsing of 'controls' statements.  Add support for
+	  version 9 'keys' clause on inet controls.
+	- Add support for 'update-policy' clause in 'zone' statements.
+	- Add support for a bunch of options added in version 9.x.  This
+	  does not provide complete support for version 9 config files,
+	  just most of the easy stuff.

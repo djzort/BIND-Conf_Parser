@@ -9,7 +9,7 @@ use strict;
 use integer;
 use vars qw($VERSION);
 
-$VERSION = "0.95";
+$VERSION = "0.97";
 
 # token classes
 use constant WORD	=> 'W';
@@ -17,6 +17,10 @@ use constant STRING	=> '"';
 use constant NUMBER	=> '#';
 use constant IPADDR	=> '.';
 use constant ENDoFILE	=> '';
+
+
+use constant DEFAULT_CONTROLS_PORT => 953;
+
 
 sub choke {
     shift;
@@ -30,19 +34,30 @@ sub set_toke($$;$) {
 }
 
 
+sub cur_line($) {
+    my $self = shift;
+    $self->{_line}
+}
+
 sub where($;$) {
     my $self = shift;
     if (@_) {
 	$self->{_file} . ":" . $_[0]
     } else {
-	$self->{_file} . ":" . $self->{_line}
+	$self->{_file} . ":" . $self->cur_line
     }
 }
 
 sub read_line($) {
     my $self = shift;
     $self->{_line}++;
-    chomp($self->{_curline} = $self->{_fh}->getline);
+    if (defined( $self->{_curline} = $self->{_fh}->getline )) {
+	chomp $self->{_curline};
+	1
+    } else {
+    	$self->{_curline} = "";
+	0
+    }
 }
 
 sub check_comment($) {
@@ -51,7 +66,7 @@ sub check_comment($) {
 	$i=~m:\G#.*:gc			and last;
 	$i=~m:\G//.*:gc			and last;
 	if ($i=~m:\G/\*:gc) {
-	    my($line) = $self->{_line};
+	    my($line) = $self->cur_line;
 	    until ($i=~m:\G.*?\*/:gc) {
 		$self->read_line || $i ne "" ||
 			$self->choke("EOF in comment starting at ",
@@ -66,7 +81,7 @@ sub check_comment($) {
 sub lex_string($) {
     my $self = shift;
     my($s, $line);
-    $line = $self->{_line};
+    $line = $self->cur_line;
     $s = "";
     LOOP: for my $i ($self->{_curline}) {
 # the lexer in bind doesn't implement backslash escapes of any kind
@@ -324,6 +339,44 @@ sub parse_pubkey($$) {
     $self->expect(STRING, $mess);
     return [ $flags, $proto, $algo, $self->{_data} ];
 }
+sub parse_update_policy($$) {
+    my($self, $mess) = @_;
+    my(@policies, $isgrant, $identity, $type, $name, @rrs);
+    $self->expect('{', $mess);					# }
+    while (1) {							# { {
+	$self->expect([[qw(grant deny)], '}' ], "reading update policy type");
+	last if $self->{_token} eq '}';
+	$isgrant = $self->{_data} eq "grant";
+	$self->expect([WORD, STRING, '*'], "following grant/deny");
+	$identity = $self->{_token} eq '*' ? '*' : $self->{_data};
+	$self->expect([[qw(name subdomain wildcard self)]],
+		      "reading update policy nametype");
+	$type = $self->{_data};
+	$self->expect([WORD, STRING, '*'], "following name type");
+	$name = $self->{_token} eq '*' ? '*' : $self->{_data};
+	@rrs = ();
+	while (1) {
+	    $self->expect([WORD, STRING, ';'], "reading RR type list");
+	    last if $self->{_token} eq ';';
+	    push @rrs, $self->{_data};
+	}
+	$self->expect(';', "reading update policy list");
+	push @policies, [ $isgrant, $identity, $type, $name, [ @rrs ] ];
+    }
+    return \@policies;
+}
+sub parse_keylist ($$) {
+    my($self, $mess) = @_;
+    my(@keys);
+    $self->expect('{', $mess);						# }
+    while (1) {								# { {
+	$self->expect([ WORD, STRING, '}' ], "reading key list");
+	last if $self->{_token} eq '}';
+	push @keys, $self->{_data};
+	$self->expect(';', "reading key list");
+    }
+    return \@keys;
+}
 
 sub parse_logging_category($) {
     my $self = shift;
@@ -413,8 +466,8 @@ sub parse_logging_channel($) {
 
 sub parse_logging($) {
     my $self = shift;
-    $self->expect('{', "following `logging'");
-    while (1) {
+    $self->expect('{', "following `logging'");				# }
+    while (1) {								# { {
 	$self->expect([ [ qw(category channel) ], '}' ],
 		      "reading logging options");
 	last if $self->{_token} eq '}';
@@ -432,14 +485,17 @@ my(%opt_table) = (
     "directory"			=> STRING,
     "named-xfer"		=> STRING,
     "dump-file"			=> STRING,
+    "cache-file"		=> STRING,
     "memstatistics-file"	=> STRING,
     "pid-file"			=> STRING,
     "statistics-file"		=> STRING,
+    "random-device"		=> STRING,
     "auth-nxdomain"		=> \&parse_bool,
     "deallocate-on-exit"	=> \&parse_bool,
     "dialup"			=> \&parse_bool,
     "fake-iquery"		=> \&parse_bool,
     "fetch-glue"		=> \&parse_bool,
+    "match-mapped-addresses"	=> \&parse_bool,
     "has-old-clients"		=> sub {
 	    my($self, $mess) = @_;
 	    my($arg) = $self->parse_bool("following `has-old-clients'");
@@ -455,6 +511,12 @@ my(%opt_table) = (
     "rfc2308-type1"		=> \&parse_bool,
     "use-id-pool"		=> \&parse_bool,
     "treat-cr-as-space"		=> \&parse_bool,
+    "use-ixfr"			=> \&parse_bool,
+    "provide-ixfr"		=> \&parse_bool,
+    "request-ixfr"		=> \&parse_bool,
+    "minimal-responses"		=> \&parse_bool,
+    "additional-from-auth"	=> \&parse_bool,
+    "additional-from-cache"	=> \&parse_bool,
     "also-notify"		=> \&parse_addrlist,
     "forward"			=> \&parse_forward,
     "forwarders"		=> \&parse_addrlist,
@@ -466,6 +528,9 @@ my(%opt_table) = (
 	    return [$type, $self->parse_check_names($mess)
 	    ];
 	},
+    "allow-notify"		=> \&parse_addrmatchlist,
+    "allow-update-forwarding"	=> \&parse_addrmatchlist,
+    "allow-v6-synthesis"	=> \&parse_addrmatchlist,
     "allow-query"		=> \&parse_addrmatchlist,
     "allow-transfer"		=> \&parse_addrmatchlist,
     "allow-recursion"		=> \&parse_addrmatchlist,
@@ -510,8 +575,11 @@ my(%opt_table) = (
     "lame-ttl"			=> NUMBER,
     "max-transfer-time-in"	=> NUMBER,
     "max-ncache-ttl"		=> NUMBER,
+    "max-cache-ttl"		=> NUMBER,
+    "max-cache-size"		=> \&parse_size,
     "min-roots"			=> NUMBER,
     "serial-queries"		=> NUMBER,
+    "serial-query-rate"		=> NUMBER,
     "transfer-format"		=> \&parse_transfer_format,
     "transfers-in"		=> NUMBER,
     "transfers-out"		=> NUMBER,
@@ -519,6 +587,9 @@ my(%opt_table) = (
     "transfer-source"		=> IPADDR,
     "maintain-ixfr-base"	=> \&parse_bool,
     "max-ixfr-log-size"		=> NUMBER,
+    "port"			=> NUMBER,
+    "recursive-clients"		=> NUMBER,
+    "tcp-clients"		=> NUMBER,
     "coresize"			=> \&parse_size,
     "datasize"			=> \&parse_size,
     "files"			=> \&parse_size,
@@ -531,12 +602,12 @@ my(%opt_table) = (
     "sortlist"			=> \&parse_addrmatchlist,
     "rrset-order"		=> sub {
 	    my($self, $mess) = @_;
-	    $self->expect('{', $mess);
+	    $self->expect('{', $mess);				# }
 	    my(@items, $class, $type, $name);
 	    $mess = "while reading `rrset-order' list";
 	    while(1) {
 		$class = $type = "any";
-		$name = "*";
+		$name = "*";					# { {
 		$self->expect([[qw(class type name order)], '}'], $mess);
 		last if $self->{_token} eq '}';
 		if ($self->{_data} eq "class") {
@@ -561,6 +632,15 @@ my(%opt_table) = (
 	    }
 	    return \@items;
 	},
+    "tkey-dhkey"              => sub {
+	    my($self, $mess) = @_;
+	    $self->expect(STRING, $mess);
+	    my($cp) = $self->{_data};
+	    $self->expect(NUMBER, "following cp part in `tkey-dhkey'");
+	    return [$cp, $self->{_data}];
+	},
+    "tkey-gssapi-credential"  => STRING,
+    "tkey-domain"             => STRING,
 );
 
 sub parse_key($) {
@@ -593,20 +673,30 @@ sub parse_key($) {
 
 sub parse_controls($) {
     my $self = shift;
-    $self->expect('{', "following `controls'");
-    while(1) {
-	$self->expect([ [ qw(inet unix) ], ';' ], "reading `controls'");
-	last if $self->{_token} eq ';';
+    $self->expect('{', "following `controls'");				# }
+    while(1) {								# { {
+	$self->expect([ [ qw(inet unix) ], '}' ], "reading `controls'");
+	last if $self->{_token} eq '}';
 	if ($self->{_data} eq "inet") {
-	    my($addr, $port);
+	    my(@data);
+	    my($addr, $port, $addrlist, $keylist);
 	    $self->expect([ IPADDR, '*' ], "following `inet'");
-	    $addr = $self->{_token} eq '*' ? 0 : $self->{_data};
-	    $self->expect([["port"]], "following inet address");
-	    $self->expect(NUMBER, "following `port'");
-	    $port = 0 + $self->{_data};
-	    $self->expect([["allow"]], "following port number");
-	    $self->handle_control("inet", [ $addr, $port,
-		$self->parse_addrmatchlist("following `allow'") ]);
+	    push @data, $self->{_token} eq '*' ? 0 : $self->{_data};
+	    $self->expect([[qw(port allow)]], "following inet address");
+	    if ($self->{_data} eq "port") {
+		$self->expect(NUMBER, "following `port'");
+		push @data, 0 + $self->{_data};
+		$self->expect([["allow"]], "following port number");
+	    } else {
+		push @data, DEFAULT_CONTROLS_PORT;
+	    }
+	    push @data, $self->parse_addrmatchlist("following `allow'");
+	    $self->expect([["keys"], ';'], "following `allow' addrlist");
+	    if ($self->{_token} ne ';') {
+		push @data, $self->parse_keylist("following `keys'");
+		$self->expect(';', "at end of inet control entry");
+	    }
+	    $self->handle_control("inet", @data);
 	} else {		# unix
 	    my($path, $perm, $owner);
 	    $self->expect(STRING, "following `unix'");
@@ -623,7 +713,7 @@ sub parse_controls($) {
 			[ $path, $perm, $owner, $self->{_data} ]);
 	}
     }
-    $self->expect('}', "finishing `controls'");
+    $self->expect(';', "to finish `controls'");
 }
 
 sub parse_server($) {
@@ -710,7 +800,8 @@ sub parse_zone($) {
 	$self->expect([ [ qw(type file masters transfer-source check-names
 			     allow-update allow-query allow-transfer
 			     max-transfer-time-in dialup notify also-notify
-			     ixfr-base pubkey forward fowarders) ],
+			     ixfr-base pubkey forward forwarders
+			     update-policy) ],
 			  STRING, '}' ], "reading zone `$name'");
 	last if $self->{_token} eq '}';
 	$temp = $self->{_data};
@@ -749,6 +840,10 @@ sub parse_zone($) {
 	}
 	if ($temp eq "pubkey") {
 	    $options{$temp} = $self->parse_pubkey("following `$temp'");
+	    next
+	}
+	if ($temp eq "update-policy") {
+	    $options{$temp} = $self->parse_update_policy("following `$temp'");
 	    next
 	}
 	$options{$temp} = $self->parse_addrmatchlist("following `$temp'");
